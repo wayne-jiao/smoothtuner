@@ -1,17 +1,33 @@
+# GRPO Training for Futures Contract Specification Extraction
+# 
+# This script trains a language model to extract contract specifications
+# from futures contract documents using Group Relative Policy Optimization (GRPO).
+#
+# Prerequisites:
+# 1. Run generate_grpo_dataset.py to create the training dataset
+# 2. Ensure the following datasets exist:
+#    - ./futures_grpo_train (training set)
+#    - ./futures_grpo_test (evaluation set)
+#
+# The model learns to:
+# - Read contract specification documents
+# - Extract specific fields (lot_size, currency, exchange, etc.)
+# - Format answers in \\boxed{} notation
+#
 # Warning control
 import warnings
 warnings.filterwarnings('ignore')
 import torch
 from transformers import TrainingArguments, AutoTokenizer, AutoModelForCausalLM
 from trl import GRPOTrainer, GRPOConfig
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, load_from_disk
 from helper import generate_responses, test_model_with_questions, load_model_and_tokenizer
 import re
 import pandas as pd
 from tqdm import tqdm
 
 print("="*80)
-print("GRPO Training Script - Step-by-Step Walkthrough")
+print("GRPO Training Script - Futures Contract Specification Extraction")
 print("="*80)
 print("\n")
 
@@ -21,16 +37,18 @@ print(f"   Device: {'CUDA' if USE_GPU and torch.cuda.is_available() else 'CPU'}"
 print()
 
 SYSTEM_PROMPT = (
-    "You are a helpful assistant that solves problems step-by-step. "
-    "Always include the final numeric answer inside \\boxed{}."
+    "You are an expert at reading and analyzing futures contract specifications. "
+    "You will be provided with a contract specification document and asked specific questions about it. "
+    "Analyze the document carefully and provide precise answers. "
+    "Always include your final answer inside \\boxed{}."
 )
 
 print("="*80)
 print("STEP 1: Define Reward Function")
 print("="*80)
 
-print("The reward function checks if the model's answer matches the ground truth.")
-print("It extracts numbers from \\boxed{} format and gives 1.0 for correct, 0.0 for wrong.\n")
+print("The reward function checks if the model's extracted answer matches the ground truth.")
+print("It extracts content from \\boxed{} format and gives partial credit for correct answers.\n")
 
 # def reward_func(completions, ground_truth, **kwargs):
 #     # Regular expression to capture content inside \boxed{}
@@ -80,59 +98,58 @@ def reward_func(completions, ground_truth, **kwargs):
 
 print("\n🧪 Testing reward function with sample predictions...")
 sample_pred = [[{"role": "assistant", 
-                 "content": r"...Calculating the answer. \boxed{72}"}]]
-ground_truth = ["72"]
+                 "content": r"Looking at the specification, the exchange is \\boxed{XSFE}"}]]
+ground_truth = ["XSFE"]
 reward = reward_func(sample_pred, ground_truth)
-print(f"   ✓ Correct answer (72 == 72): Reward = {reward}")
+print(f"   ✓ Correct answer (XSFE == XSFE): Reward = {reward}")
 
 sample_pred = [[{"role": "assistant", 
-                 "content": r"...Calculating the answer \boxed{71}"}]]
-ground_truth = ["72"]
+                 "content": r"The exchange code is \\boxed{XCME}"}]]
+ground_truth = ["XSFE"]
 reward = reward_func(sample_pred, ground_truth)
-print(f"   ✗ Wrong answer (71 != 72): Reward = {reward}")
+print(f"   ✗ Wrong answer (XCME != XSFE): Reward = {reward}")
 print()
 
 print("="*80)
 print("STEP 2: Load Evaluation Dataset")
 print("="*80)
 
-data_num = 10  # Increased from 5 to 20 for better statistical evaluation
-print(f"Loading {data_num} examples from GSM8K test set...")
-eval_dataset = load_dataset("openai/gsm8k", "main")["test"].select(range(data_num))
-print(f"✓ Loaded {len(eval_dataset)} examples\n")
+data_num = 20  # Number of evaluation examples
+print(f"Loading {data_num} examples from futures test set...")
+try:
+    eval_dataset = load_from_disk("./futures_grpo_test")
+    if len(eval_dataset) > data_num:
+        eval_dataset = eval_dataset.select(range(data_num))
+    print(f"✓ Loaded {len(eval_dataset)} examples\n")
+except FileNotFoundError:
+    print("❌ Error: futures_grpo_test dataset not found!")
+    print("   Please run generate_grpo_dataset.py first to create the dataset.\n")
+    exit(1)
+
 sample_df = eval_dataset.to_pandas()
 print("Sample data:")
 print(sample_df.head())
 print()
 
 print("="*80)
-print("STEP 3: Preprocess Data")
+print("STEP 3: Check Data Format")
 print("="*80)
 
-print("Extracting ground truth answers and formatting prompts...\n")
-
-def post_processing(example):
-    match = re.search(r"####\s*(-?\d+)", example["answer"])
-    example["ground_truth"] = match.group(1) if match else None
-    example["prompt"] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": example["question"]}
-    ]
-    return example
-
-eval_dataset = eval_dataset.map(post_processing).remove_columns(["question", "answer"])
-print(f"✓ Preprocessed {len(eval_dataset)} examples")
-print("\nProcessed data structure:")
+print("The futures dataset is already preprocessed with 'prompt' and 'ground_truth' fields.\n")
+print(f"✓ Dataset has {len(eval_dataset)} examples")
+print("\nData structure:")
 sample_df = eval_dataset.select(range(min(3, len(eval_dataset)))).to_pandas()
 for idx, row in sample_df.iterrows():
     print(f"  Example {idx+1}: Ground truth = {row['ground_truth']}")
+    print(f"              RIC Root = {row['metadata']['ric_root']}")
+    print(f"              Field = {row['metadata']['field']}")
 print()
 
 print("="*80)
 print("STEP 4: Evaluate Base Model (Before Training)")
 print("="*80)
 
-print("Loading Qwen2.5-0.5B-Instruct model...\n")
+print("Loading Qwen2.5-0.5B-Instruct base model for baseline evaluation...\n")
 model, tokenizer = load_model_and_tokenizer("./models/Qwen/Qwen2.5-0.5B-Instruct", USE_GPU)
 
 print(f"\n🔍 Running baseline evaluation on {len(eval_dataset)} examples...")
@@ -169,24 +186,30 @@ print("="*80)
 print("STEP 5: Prepare Training Dataset")
 print("="*80)
 
-print("Loading full GSM8K training set...\n")
-dataset = load_dataset("openai/gsm8k", "main")
-train_dataset = dataset["train"]
-print(f"Full training set size: {len(train_dataset)} examples")
- 
-# Apply to dataset
-print("Preprocessing training data...")
-train_dataset = train_dataset.map(post_processing)
-train_dataset = train_dataset.remove_columns(["question", "answer"])
+print("Loading futures GRPO training set...\n")
+try:
+    train_dataset = load_from_disk("./futures_grpo_train")
+    print(f"Full training set size: {len(train_dataset)} examples")
+except FileNotFoundError:
+    print("❌ Error: futures_grpo_train dataset not found!")
+    print("   Please run generate_grpo_dataset.py first to create the dataset.\n")
+    exit(1)
+
+# The futures dataset is already preprocessed
 if not USE_GPU:
-    train_dataset = train_dataset.select(range(50))  # Increased from 10 to 100
-    print(f"⚠️  Running on CPU - using {len(train_dataset)} examples for training")
+    # Use fewer examples for CPU training
+    original_size = len(train_dataset)
+    train_dataset = train_dataset.select(range(min(50, len(train_dataset))))
+    print(f"⚠️  Running on CPU - using {len(train_dataset)}/{original_size} examples for training")
     print(f"    (This will be slower but should show better results)")
 else:
     print(f"Using all {len(train_dataset)} examples for training")
+
 print(f"\nFirst training example structure:")
 print(f"  Keys: {train_dataset[0].keys()}")
 print(f"  Ground truth: {train_dataset[0]['ground_truth']}")
+print(f"  RIC Root: {train_dataset[0]['metadata']['ric_root']}")
+print(f"  Field: {train_dataset[0]['metadata']['field']}")
 print()
 
 print("="*80)
@@ -216,10 +239,10 @@ print("="*80)
 print("STEP 7: Initialize Model for Training")
 print("="*80)
 
-print("Loading SmolLM2-135M-Instruct model for GRPO training...\n")
-print("NOTE: If you have the Qwen model downloaded, it works better for math.")
-print("      Change this line to: './models/Qwen/Qwen2.5-0.5B-Instruct'\n")
-model, tokenizer = load_model_and_tokenizer("./models/HuggingFaceTB/SmolLM2-135M-Instruct", USE_GPU)
+print("Loading Qwen2.5-0.5B-Instruct model for GRPO training...\n")
+print("NOTE: This model works well for extracting information from documents.")
+print("      You can also try SmolLM2-135M-Instruct for a smaller/faster model.\n")
+model, tokenizer = load_model_and_tokenizer("./models/Qwen/Qwen2.5-0.5B-Instruct", USE_GPU)
 
 print("\nInitializing GRPO Trainer...")
 grpo_trainer = GRPOTrainer(
@@ -242,14 +265,8 @@ print("="*80)
 print("STEP 9: Evaluate Trained Model")
 print("="*80)
 
-fully_trained_qwen = True
-if fully_trained_qwen:
-    print("Loading pre-trained GRPO model (Qwen2.5-0.5B-GRPO) for comparison...\n")
-    model, tokenizer = load_model_and_tokenizer("./models/banghua/Qwen2.5-0.5B-GRPO", USE_GPU)
-    
-else:
-    print("Using the model we just trained...\n")
-    model = grpo_trainer.model
+print("Using the model we just trained for futures contract extraction...\n")
+model = grpo_trainer.model
 
 print(f"🔍 Running post-training evaluation on {len(eval_dataset)} examples...")
 print("-"*80)

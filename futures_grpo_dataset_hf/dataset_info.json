@@ -1,0 +1,55 @@
+{
+  "citation": "",
+  "description": "",
+  "features": {
+    "prompt": {
+      "feature": {
+        "content": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "role": {
+          "dtype": "string",
+          "_type": "Value"
+        }
+      },
+      "_type": "List"
+    },
+    "ground_truth": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "metadata": {
+      "exchange": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "field": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "field_db_name": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "ric_root": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "source": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "spec_url": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "timestamp": {
+        "dtype": "string",
+        "_type": "Value"
+      }
+    }
+  },
+  "homepage": "",
+  "license": ""
+}
